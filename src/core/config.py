@@ -4,7 +4,9 @@ Lab 11 — Configuration, provider selection, API keys.
 Hai tầng model (không trộn):
 
   Blue Team (CP2–CP3, guardrails / pipeline / protected agent)
-    → CỐ ĐỊNH OpenRouter ``liquid/lfm-3-1.7b:free``
+    → Mặc định OpenRouter ``liquid/lfm-3-1.7b:free`` theo đề.
+    → BLUE_TEAM_PROVIDER=local: LiquidAI/LFM3-1.7B GGUF chạy trên máy,
+      theo yêu cầu người dùng khi OpenRouter quá tải. JSON khai đúng provider.
        https://openrouter.ai/liquid/lfm-3-1.7b:free
     → Cần ``OPENROUTER_API_KEY``
 
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -33,12 +36,15 @@ except ImportError:
 PROVIDER_OPENAI = "openai"
 PROVIDER_GEMINI = "gemini"
 PROVIDER_OPENROUTER = "openrouter"
+PROVIDER_LOCAL = "local"
 
 # --- Blue Team (LOCKED) ---
 BLUE_PROVIDER = PROVIDER_OPENROUTER
 BLUE_MODEL = "liquid/lfm-3-1.7b:free"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_OPENROUTER_MODEL = BLUE_MODEL  # alias
+LOCAL_BLUE_MODEL = "LiquidAI/LFM3-1.7B"
+LOCAL_BLUE_BASE_URL = "http://127.0.0.1:8080/v1"
 
 # --- Red Team ---
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
@@ -100,12 +106,15 @@ except FileNotFoundError:
 # ---------------------------------------------------------------------------
 
 def get_blue_provider() -> str:
-    return BLUE_PROVIDER
+    provider = os.environ.get("BLUE_TEAM_PROVIDER", BLUE_PROVIDER).strip().lower()
+    if provider not in {PROVIDER_OPENROUTER, PROVIDER_LOCAL}:
+        raise ValueError("BLUE_TEAM_PROVIDER must be openrouter or local.")
+    return provider
 
 
 def get_blue_model() -> str:
-    # Hard-locked; env cannot override for the graded Blue Team path.
-    return BLUE_MODEL
+    # Keep the original model fixed on the OpenRouter path; local is explicit.
+    return LOCAL_BLUE_MODEL if get_blue_provider() == PROVIDER_LOCAL else BLUE_MODEL
 
 
 def get_openrouter_api_key() -> str:
@@ -113,7 +122,18 @@ def get_openrouter_api_key() -> str:
 
 
 def blue_client_kwargs() -> dict:
-    """OpenAI SDK kwargs pointing at OpenRouter (Blue Team only)."""
+    """Use a separate loopback endpoint and dummy key for the local runtime."""
+    if get_blue_provider() == PROVIDER_LOCAL:
+        base_url = os.environ.get("LOCAL_BLUE_BASE_URL", LOCAL_BLUE_BASE_URL).strip()
+        parsed = urlsplit(base_url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or parsed.username is not None or parsed.password is not None
+            or parsed.query or parsed.fragment
+        ):
+            raise ValueError("LOCAL_BLUE_BASE_URL must point to a loopback HTTP(S) endpoint.")
+        return {"api_key": "local-not-needed", "base_url": base_url, "timeout": 120.0}
     return {
         "api_key": get_openrouter_api_key() or None,
         "base_url": (
@@ -234,23 +254,24 @@ def is_harder_model() -> bool:
     return any(x in m for x in ("gpt-5.6", "pro", "gemini-3.8", "gemini-3.7"))
 
 
-def setup_api_key():
-    """Ensure keys for Blue (OpenRouter) + Red / Red Advance (OpenAI or Gemini)."""
-    if not get_openrouter_api_key():
+def setup_api_key(*, blue: bool = True, red: bool = True):
+    """Ask only for credentials used by the selected checkpoints."""
+    if blue and get_blue_provider() == PROVIDER_OPENROUTER and not get_openrouter_api_key():
         os.environ["OPENROUTER_API_KEY"] = input(
             "Enter OpenRouter API Key (Blue): "
         ).strip()
-    print(f"Blue  — {blue_provider_label()}  [LOCKED]")
+    mode = "LOCAL GGUF Q4_K_M; provider differs from original rubric" if get_blue_provider() == PROVIDER_LOCAL else "LOCKED"
+    print(f"Blue  — {blue_provider_label()}  [{mode}]")
 
-    red = get_red_provider()
+    red_provider = get_red_provider()
     model = get_red_model()
-    if red == PROVIDER_GEMINI:
-        if not os.environ.get("GOOGLE_API_KEY", "").strip():
+    if red_provider == PROVIDER_GEMINI:
+        if red and not os.environ.get("GOOGLE_API_KEY", "").strip():
             os.environ["GOOGLE_API_KEY"] = input("Enter Google API Key (Red): ").strip()
         os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "0"
         print(f"Red / Red Advance  — gemini:{model}")
     else:
-        if not get_openai_api_key():
+        if red and not get_openai_api_key():
             os.environ["OPENAI_API_KEY"] = input("Enter OpenAI API Key (Red): ").strip()
         print(f"Red / Red Advance  — openai:{model}")
 

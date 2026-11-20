@@ -11,6 +11,7 @@ Status convention (không dùng True/False mơ hồ):
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Literal
 
 from google.genai import types
@@ -21,6 +22,25 @@ from core.config import ALLOWED_TOPICS, BLOCKED_TOPICS
 
 # Quyết định rõ ràng — tránh đảo nghĩa True/False
 InputStatus = Literal["ALLOW", "BLOCK"]
+
+
+def normalize_input(text: str) -> str:
+    """NFKC handles full-width letters; format characters cannot hide keywords."""
+    text = unicodedata.normalize("NFKC", text)
+    text = "".join(char for char in text if unicodedata.category(char) != "Cf")
+    return " ".join(text.casefold().split())
+
+
+def _topic_text(text: str) -> str:
+    # Config uses unaccented Vietnamese, while customers normally type accents.
+    text = unicodedata.normalize("NFKD", normalize_input(text))
+    return "".join(char for char in text if not unicodedata.combining(char)).replace("đ", "d")
+
+
+def _has_topic(text: str, topic: str) -> bool:
+    # Word boundaries avoid matching 'kill' inside a harmless word like 'skills'.
+    phrase = re.escape(_topic_text(topic)).replace(r"\ ", r"\s+")
+    return re.search(r"(?<!\w)" + phrase + r"(?!\w)", text) is not None
 
 
 # ============================================================
@@ -51,14 +71,23 @@ def detect_injection(user_input: str) -> InputStatus:
     Returns:
         ``"BLOCK"`` if injection detected (chặn), ``"ALLOW"`` otherwise (cho qua).
     """
+    normalized = normalize_input(user_input)
     INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
+        r"\bignore\s+(?:all\s+)?(?:(?:previous|above|prior)\s+)?instructions?\b",
+        r"\byou\s+are\s+now\b",
+        r"\b(?:system|developer)\s+(?:prompt|instructions?|override)\b",
+        r"\breveal\s+your\s+(?:instructions?|prompt)\b",
+        r"\bpretend\s+you\s+are\b",
+        r"\bact\s+as\s+(?:(?:a|an)\s+)?unrestricted\b",
+        r"\b(?:bypass|disable|override)\b.*\b(?:safety|guardrails?|rules|filters?)\b",
+        r"\b(?:reveal|disclose|print|translate|encode|dump|show|give)\b.*"
+        r"\b(?:secrets?|credentials?|admin\s+password|api\s*key|internal\s+(?:notes?|password)|database\s+host)\b",
+        r"bỏ\s+qua\s+(?:(?:mọi|tất\s+cả|các)\s+)?(?:hướng\s+dẫn|quy\s+tắc)",
+        r"tiết\s+lộ\s+(?:mật\s+khẩu|thông\s+tin\s+nội\s+bộ|api)",
     ]
 
     for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, user_input, re.IGNORECASE):
+        if re.search(pattern, normalized, re.IGNORECASE):
             return "BLOCK"
     return "ALLOW"
 
@@ -84,14 +113,12 @@ def topic_filter(user_input: str) -> InputStatus:
         ``"BLOCK"`` = chặn (off-topic hoặc topic cấm).
         ``"ALLOW"`` = cho qua (câu banking hợp lệ).
     """
-    input_lower = user_input.lower()
-
-    # TODO: Implement logic:
-    # 1. If input contains any blocked topic -> return "BLOCK"
-    # 2. If input doesn't contain any allowed topic -> return "BLOCK"
-    # 3. Otherwise -> return "ALLOW"
-
-    pass  # Replace with your implementation
+    text = _topic_text(user_input)
+    if any(_has_topic(text, topic) for topic in BLOCKED_TOPICS):
+        return "BLOCK"
+    topics = [*ALLOWED_TOPICS, "bank", "vinbank", "accounts", "transactions",
+              "loans", "payments", "deposits", "withdrawals", "rut tien", "nap tien"]
+    return "ALLOW" if any(_has_topic(text, topic) for topic in topics) else "BLOCK"
 
 
 # ============================================================
@@ -144,14 +171,17 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
         text = self._extract_text(user_message)
 
-        # TODO: Implement logic:
-        # 1. Call detect_injection(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 2. Call topic_filter(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 3. If both return "ALLOW": return None (let message through)
-
-        pass  # Replace with your implementation
+        # Bound input size before regex/model work. Empty messages are not queries.
+        if not normalize_input(text) or len(text) > 10000:
+            message = "Input blocked: send a banking question of 1 to 10000 characters."
+        elif detect_injection(text) == "BLOCK":
+            message = "Input blocked: instruction override or protected-data request."
+        elif topic_filter(text) == "BLOCK":
+            message = "Input blocked: I can only help with VinBank banking questions."
+        else:
+            return None
+        self.blocked_count += 1
+        return self._block_response(message)
 
 
 # ============================================================

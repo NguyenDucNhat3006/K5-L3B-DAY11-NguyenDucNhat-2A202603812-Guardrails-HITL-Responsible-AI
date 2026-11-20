@@ -1,7 +1,7 @@
 """
 OpenAI SDK runtime — dùng cho:
 
-  Blue Team → OpenRouter liquid/lfm-3-1.7b:free (create_blue_pair)
+  Blue Team → OpenRouter by default, or explicitly selected local llama.cpp.
   Red Team  → OpenAI gpt-4o-mini (create_openai_pair) khi RED_TEAM_PROVIDER=openai
 
 Gemini Red Team dùng Google ADK trong agents/*.py — không đi qua file này.
@@ -49,19 +49,30 @@ class OpenAIRunner:
     def _client(self):
         from openai import OpenAI
 
-        return OpenAI(**(self.client_kwargs or {}))
+        # The SDK's long default timeout/retries can hide a saturated free
+        # endpoint for several minutes. Fail clearly so the student can retry.
+        options = {"timeout": 60.0, "max_retries": 0, **(self.client_kwargs or {})}
+        return OpenAI(**options)
 
-    async def chat(self, agent: OpenAIAgent, user_message: str) -> str:
+    async def chat(self, agent: OpenAIAgent, user_message: str, *, user_id: str = "student") -> str:
         for hook in self.input_hooks:
             blocked = hook(user_message)
             if blocked:
                 return blocked
 
-        block_msg = await self._run_input_plugins(user_message)
+        block_msg = await self._run_input_plugins(user_message, user_id=user_id)
         if block_msg is not None:
             return block_msg
 
         client = self._client()
+        generation = {}
+        if self.provider == "local":
+            # Follow LiquidAI's chat sampling recipe; keep lab answers bounded.
+            generation = {
+                "max_tokens": 768,
+                "extra_body": {"top_k": 50, "repeat_penalty": 1.1,
+                               "chat_template_kwargs": {"enable_thinking": False}},
+            }
         completion = client.chat.completions.create(
             model=self.model,
             messages=[
@@ -69,6 +80,7 @@ class OpenAIRunner:
                 {"role": "user", "content": user_message},
             ],
             temperature=self.temperature,
+            **generation,
         )
         text = (completion.choices[0].message.content or "").strip()
 
@@ -78,7 +90,7 @@ class OpenAIRunner:
         text = await self._run_output_plugins(text)
         return text
 
-    async def _run_input_plugins(self, user_message: str) -> str | None:
+    async def _run_input_plugins(self, user_message: str, *, user_id: str = "student") -> str | None:
         if not self.plugins:
             return None
         try:
@@ -90,7 +102,7 @@ class OpenAIRunner:
             role="user",
             parts=[types.Part.from_text(text=user_message)],
         )
-        ctx = _MockInvocationContext()
+        ctx = _MockInvocationContext(user_id=user_id)
         for plugin in self.plugins:
             cb = getattr(plugin, "on_user_message_callback", None)
             if cb is None:
@@ -191,7 +203,7 @@ def create_blue_pair(
     output_hooks: list | None = None,
     temperature: float = 0.4,
 ) -> tuple[OpenAIAgent, OpenAIRunner]:
-    """Blue Team — always OpenRouter liquid/lfm-3-1.7b:free."""
+    """Blue uses its configured provider, with the same guardrail plugins."""
     return _make_pair(
         name=name,
         instruction=instruction,
@@ -202,7 +214,7 @@ def create_blue_pair(
         plugins=plugins,
         input_hooks=input_hooks,
         output_hooks=output_hooks,
-        temperature=temperature,
+        temperature=0.1 if get_blue_provider() == "local" else temperature,
     )
 
 

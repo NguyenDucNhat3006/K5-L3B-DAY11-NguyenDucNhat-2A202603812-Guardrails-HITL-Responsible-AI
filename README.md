@@ -1,5 +1,7 @@
 # Day 11 — Controlled Agent Security (2026)
 
+**Học viên:** Nguyễn Đức Nhật · **MSSV:** `2A202603812` · **Lớp:** K5-L3B
+
 > 👤 **Hình thức:** bài tập **cá nhân** (1 người / 1 MSSV).  
 > 🎯 **Mục tiêu:** đóng vai **Blue Team** để học cách xây Guardrails phòng thủ, rồi đóng vai **Red Team** để tấn công agent **Red** hoặc **Red Advance**.  
 > ✅ Làm theo **Checkpoint 1 → 5** trong [`CHECKPOINTS.md`](CHECKPOINTS.md) · nộp theo [`SUBMISSION.md`](SUBMISSION.md).
@@ -75,8 +77,7 @@ Bonus lab chỉ tính **một** trong hai: leak **Red** (B1, tối đa +5) hoặ
 
 Codelab lớp: xem `template-codelabs/codelab-day11-k4-l3a.md` (L3A) hoặc bản L3B tương ứng.
 
-**Repo nộp học viên:** `K4-<L3A hoặc L3B>-DAY11-<HoVaTen>-<MSSV>-Guardrails-HITL-Responsible-AI`  
-Ví dụ: `K4-L3A-DAY11-NguyenVanA-2A2026xxxxx-Guardrails-HITL-Responsible-AI`
+**Repo nộp học viên:** `K5-L3B-DAY11-NguyenDucNhat-2A202603812-Guardrails-HITL-Responsible-AI`
 
 ---
 
@@ -160,5 +161,48 @@ pip install -r requirements.txt
 
 Điền `.env`: `OPENROUTER_API_KEY` + `RED_TEAM_PROVIDER=openai|gemini` (và key tương ứng).  
 Rồi mở [`CHECKPOINTS.md`](CHECKPOINTS.md) và làm lần lượt Checkpoint 1 → 5.
+
+### Chạy Blue local khi OpenRouter quá tải (cấu hình bổ sung)
+
+Theo yêu cầu chạy local, repo hỗ trợ **LiquidAI/LFM3-1.7B**, dùng bản
+[GGUF Q4_K_M chính chủ](https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF)
+với llama.cpp **b12559**. Model khoảng 1,10 GB, chạy trên GPU qua Vulkan;
+máy đang cài có GTX 1660 Ti 6 GB. Hướng dẫn nguồn:
+[LiquidAI llama.cpp](https://docs.liquid.ai/deployment/on-device/llama-cpp).
+
+```powershell
+# Cài một lần; tải vào .local-model/ và xác minh SHA-256 của từng file.
+.\.venv\Scripts\python.exe scripts/install_local_blue.py
+
+# Khởi động server nền, chỉ lắng nghe trên 127.0.0.1:8080.
+.\scripts\local_blue.ps1
+```
+
+Thêm hai dòng này vào `.env` (giữ nguyên các key Red):
+
+```dotenv
+BLUE_TEAM_PROVIDER=local
+LOCAL_BLUE_BASE_URL=http://127.0.0.1:8080/v1
+```
+
+```powershell
+# CP3 dùng local, không cần key OpenRouter; CP4 vẫn dùng provider Red trong .env.
+.\.venv\Scripts\python.exe src/main.py --part 3
+
+# Kiểm tra hoặc tắt server khi không dùng.
+.\scripts\local_blue.ps1 -Action Status
+.\scripts\local_blue.ps1 -Action Stop
+```
+
+Guardrails, audit, rate limit và egress vẫn chạy trong pipeline. File
+`outputs/results.json` khai `llm_provider: "local"`, model, lượng tử hóa và
+`execution.openrouter_requirement_met: false` để thể hiện đúng lần chạy.
+Đề gốc dùng OpenRouter. Bản nộp này chạy CP3 bằng model local theo phương án
+giáo viên cho phép. Để quay về cấu hình gốc, đặt
+`BLUE_TEAM_PROVIDER=openrouter` và chạy lại CP3 khi dịch vụ hoạt động.
+
+Server cần khởi động lại sau khi khởi động lại máy. Không cài dịch vụ tự chạy.
+`.local-model/` được Git bỏ qua. Nếu GPU không dùng được, tắt server rồi cài
+backend CPU bằng `python scripts/install_local_blue.py --backend cpu` và mở lại.
 
 Nộp theo [`SUBMISSION.md`](SUBMISSION.md) · Quy định: [`RULES.md`](RULES.md).

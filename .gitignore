@@ -207,3 +207,5 @@ marimo/_lsp/
 __marimo__/
 
 template-codelabs
+# Local model weights, runtime binaries, download cache and server logs.
+.local-model/
